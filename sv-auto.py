@@ -632,18 +632,9 @@ def perform_fullPlus_actions(u2_device, round_count, base_colors, config):
     time.sleep(0.25)
 
     # 出牌拖拽（大于6回合时从中心向两侧）
-    start_y = 672 + random.randint(-2, 2)
-    end_y = 400 + random.randint(-2, 2)
-    duration = 0.03
-    if round_count >= 6:
-        drag_points_x = [600, 700, 684, 551, 830, 501, 900, 405, 959]
-    else:
-        drag_points_x = [405, 501, 551, 600, 684, 700, 830, 900, 959]
+    play_cards(u2_device, round_count, config)
 
-    for x in drag_points_x:
-        curved_drag(u2_device, x + random.randint(-2, 2), start_y, x + random.randint(-2, 2), end_y, duration, config["extra_drag_delay"], 3)
-        time.sleep(0.05)
-    time.sleep(0.5)
+
 
     # 获取当前截图
     screenshot = take_screenshot()
@@ -675,70 +666,33 @@ def perform_fullPlus_actions(u2_device, round_count, base_colors, config):
         logger.error("无法获取截图，遍历攻击操作")
     time.sleep(0.1)
 
-def scan_self_shield_targets():
-    """扫描己方随从区域的护盾目标（彩色匹配），返回置信度最高的目标"""
-    shield_dir = "shield"
-    shield_targets = []  # 存储所有检测到的护盾目标及其置信度
 
-    # 确保shield目录存在
-    if not os.path.exists(shield_dir) or not os.path.isdir(shield_dir):
-        return []
+def play_cards(u2_device, round_count, config):
+    """
+    """
+    start_y = 672 + random.randint(-2, 2)
+    end_y = 400 + random.randint(-2, 2)
+    duration = 0.03
 
-    screenshot_shield = take_screenshot()
-    if screenshot_shield is None:
-        return []
+    #
+    if round_count >= 6:
+        drag_points_x = [600, 700, 684, 551, 830, 501, 900, 405, 959]
+    else:
+        drag_points_x = [405, 501, 551, 600, 684, 700, 830, 900, 959]
 
-    # 将PIL截图转为OpenCV格式
-    screenshot_np = np.array(screenshot_shield)
-    screenshot_cv = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)  # RGB转BGR格式
-
-    # 定义扫描区域 (254, 320) 到 (1063, 484) - 己方随从区域
-    x1, y1 = 254, 320
-    x2, y2 = 1063, 484
-    width = x2 - x1
-    height = y2 - y1
-
-    # 只扫描指定矩形区域
-    roi = screenshot_cv[y1:y2, x1:x2]
-
-    # 加载所有护盾模板（彩色）
-    shield_templates = []
-    for filename in os.listdir(shield_dir):
-        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
-            path = os.path.join(shield_dir, filename)
-            template = cv2.imread(path)  # 以彩色模式读取模板
-            if template is not None:
-                shield_templates.append(template)
-
-    # 扫描匹配护盾模板并记录置信度
-    for template in shield_templates:
-        h, w = template.shape[:2]  # 获取彩色模板的高度和宽度
-
-        # 执行彩色模板匹配
-        result = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
-        threshold = 0.75  # 匹配阈值
-
-        # 获取所有匹配位置及其置信度
-        loc = np.where(result >= threshold)
-        for pt in zip(*loc[::-1]):  # 遍历所有匹配位置
-            confidence = result[pt[1], pt[0]]  # 获取当前匹配位置的置信度
-
-            # 将相对坐标转换为绝对坐标
-            abs_x = int(pt[0] + x1 + w // 2)
-            abs_y = int(pt[1] + y1 + h // 2)
-
-            # 添加到目标列表（包含坐标和置信度）
-            shield_targets.append({
-                'x': abs_x,
-                'y': abs_y,
-                'confidence': confidence
-            })
-
-    # 按置信度从高到低排序
-    shield_targets.sort(key=lambda t: t['confidence'], reverse=True)
-
-    # 返回所有检测到的目标
-    return shield_targets
+    #
+    for x in drag_points_x:
+        curved_drag(u2_device, x + random.randint(-2, 2), start_y, x + random.randint(-2, 2), end_y, duration, config["extra_drag_delay"], 3)
+        # 新增尝试触发选目标入场曲
+        u2_device.click(640 + random.randint(-5, 5), 290 + random.randint(-5, 5))
+        time.sleep(0.1)
+        u2_device.click(640 + random.randint(-5, 5), 290 + random.randint(-5, 5))
+        time.sleep(0.1)
+        # 2. 点击敌方主战者
+        u2_device.click(646 + random.randint(-5, 5), 64 + random.randint(-5, 5))
+        time.sleep(0.05)
+    #
+    time.sleep(0.5)
 
 def enable_ansi_support():
     if sys.platform != "win32":
@@ -1466,24 +1420,6 @@ class ScriptThread(QThread):
                                     base_colors.append((color1, color2))
                                 self.log_signal.emit("第1回合，记录基准背景色完成")
 
-                            self_shield_targets = scan_self_shield_targets()
-                            if self_shield_targets:
-                                # 暂停脚本并通知用户
-                                self.paused = True
-                                self.log_signal.emit(f"检测到己方护盾目标！脚本已暂停")
-
-                                # 获取最高置信度的目标
-                                best_target = self_shield_targets[0]
-                                self.log_signal.emit(
-                                    f"检测到己方护盾随从！位置: ({best_target['x']}, {best_target['y']}), "
-                                    f"置信度: {best_target['confidence']:.2f}\n"
-                                    "脚本已暂停，请手动处理。"
-                                )
-
-                                # 跳过后续操作
-                                last_detected_button = key
-                                button_detected = True
-                                break
 
                             if current_round_count in (4, 5, 6, 7, 8):  # 第4 ，5，6 ,7,8回合
                                 self.log_signal.emit(f"第{current_round_count}回合，执行进化/超进化")
@@ -1792,7 +1728,7 @@ class ShadowverseAutomationUI(QMainWindow):
         # ADB 连接部分
         adb_layout = QHBoxLayout()
         adb_label = QLabel("ADB 端口:")
-        self.adb_input = QLineEdit(f"127.0.0.1:{self.config["emulator_port"]}")
+        self.adb_input = QLineEdit(f"127.0.0.1:{self.config['emulator_port']}")
         self.start_btn = QPushButton("开始")
         self.start_btn.clicked.connect(self.start_script)
 
