@@ -15,7 +15,7 @@ from ctypes import windll
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QTextEdit, QFrame, QGridLayout, QComboBox, QMessageBox
+    QLineEdit, QPushButton, QTextEdit, QFrame, QGridLayout, QComboBox, QMessageBox, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QPalette, QColor, QPixmap, QBrush, QDoubleValidator
@@ -592,9 +592,9 @@ def perform_evolution_actions_fallback(u2_device, is_super=False):
         screenshot_cv = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
         gray_screenshot = cv2.cvtColor(screenshot_cv, cv2.COLOR_BGR2GRAY)
 
-        max_loc, max_val = detect_super_evolution_button(gray_screenshot, "国服")
+        max_loc, max_val = detect_super_evolution_button(gray_screenshot)
         if max_val >= 0.825:
-            template_info = load_super_evolution_template("国服")
+            template_info = load_super_evolution_template()
             center_x = max_loc[0] + template_info['w'] // 2
             center_y = max_loc[1] + template_info['h'] // 2
             u2_device.click(center_x, center_y)
@@ -602,9 +602,9 @@ def perform_evolution_actions_fallback(u2_device, is_super=False):
             evolution_detected = True
             break
 
-        max_loc1, max_val1 = detect_evolution_button(gray_screenshot, "国服")
+        max_loc1, max_val1 = detect_evolution_button(gray_screenshot)
         if max_val1 >= 0.90:  # 检测阈值
-            template_info = load_evolution_template("国服")
+            template_info = load_evolution_template()
             center_x = max_loc1[0] + template_info['w'] // 2
             center_y = max_loc1[1] + template_info['h'] // 2
             u2_device.click(center_x, center_y)
@@ -1485,7 +1485,7 @@ class ScriptThread(QThread):
                                 # 如果已经在战斗中，先结束当前对战
                                 self.end_current_match()
                                 self.log_signal.emit("检测到新对战开始，结束上一场对战")
-                            # 开始新的对战
+                            # 开始新的对战                 
                             base_colors = None  # 重置开局基准背景色
                             self.start_new_match()
                             in_match = True
@@ -1665,9 +1665,16 @@ class ShadowverseAutomationUI(QMainWindow):
     def __init__(self):
         super().__init__()
         # 移除窗口边框和标题栏
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowMinimizeButtonHint)
+        # self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowMinimizeButtonHint)
+        self.setWindowFlags(Qt.WindowMinimizeButtonHint)
+
+        # 设置窗口大小策略，允许调整大小
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         self.setWindowTitle("Shadowverse 自动化脚本")
-        self.setGeometry(100, 100, 900, 700)
+        self.setGeometry(100, 100, 900,   700)
+        
+
         
         # 加载配置
         self.config = load_config()
@@ -1821,20 +1828,20 @@ class ShadowverseAutomationUI(QMainWindow):
         self.minimize_btn = QPushButton("－")
         self.minimize_btn.setObjectName("WindowControlButton")
         self.minimize_btn.clicked.connect(self.showMinimized)
-        
+
         self.maximize_btn = QPushButton("□")
         self.maximize_btn.setObjectName("WindowControlButton")
         self.maximize_btn.clicked.connect(self.toggle_maximize)
-        
+
         self.close_btn = QPushButton("×")
         self.close_btn.setObjectName("WindowControlButton")
         self.close_btn.setObjectName("CloseButton")
         self.close_btn.clicked.connect(self.close)
-        
+
         top_bar_layout.addWidget(self.minimize_btn)
         top_bar_layout.addWidget(self.maximize_btn)
         top_bar_layout.addWidget(self.close_btn)
-        
+
         main_layout.addLayout(top_bar_layout)
         
         # ADB 连接部分
@@ -2069,14 +2076,13 @@ class ShadowverseAutomationUI(QMainWindow):
         self.close_seconds_input.setText(str(seconds))
 
     def toggle_maximize(self):
-        if self.is_maximized:
+        """切换窗口最大化和恢复"""
+        if self.isMaximized():
             self.showNormal()
             self.maximize_btn.setText("□")
-            self.is_maximized = False
         else:
             self.showMaximized()
             self.maximize_btn.setText("❐")
-            self.is_maximized = True
 
     def server_changed(self, server):
         """服务器选择改变事件"""
@@ -2277,7 +2283,7 @@ class ShadowverseAutomationUI(QMainWindow):
             hours = int(self.close_hours_input.text())
             minutes = int(self.close_minutes_input.text())
             seconds = int(self.close_seconds_input.text())
-            
+
             total_seconds = hours * 3600 + minutes * 60 + seconds
 
             if total_seconds > 0:
@@ -2285,9 +2291,10 @@ class ShadowverseAutomationUI(QMainWindow):
                 # 设置定时器
                 if hasattr(self, 'close_timer'):
                     self.close_timer.stop()
+                self.remaining_time = total_seconds  # 初始化剩余时间
                 self.close_timer = QTimer()
-                self.close_timer.timeout.connect(lambda: self.close_after_timeout(total_seconds))
-                self.close_timer.start(1000)  # 每秒检查一次
+                self.close_timer.timeout.connect(self.update_close_timer)
+                self.close_timer.start(1000)  # 每秒触发一次
             else:
                 if hasattr(self, 'close_timer'):
                     self.close_timer.stop()
@@ -2295,13 +2302,14 @@ class ShadowverseAutomationUI(QMainWindow):
         except ValueError:
             QMessageBox.warning(self, "错误", "请输入有效的数字！")
 
-    def close_after_timeout(self, remaining):
-        """倒计时关闭"""
-        remaining -= 1
-        if remaining <= 0:
+    def update_close_timer(self):
+        """更新倒计时并在时间到达时关闭脚本"""
+        self.remaining_time -= 1
+        if self.remaining_time <= 0:
+            self.close_timer.stop()
             self.stop_script()
-        elif remaining % 60 == 0:  # 每分钟提醒一次
-            mins = remaining // 60
+        elif self.remaining_time % 60 == 0:  # 每分钟提醒一次
+            mins = self.remaining_time // 60
             self.log_output.append(f"脚本将在 {mins} 分钟后自动关闭...")
 
 if __name__ == "__main__":
@@ -2313,4 +2321,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"程序崩溃: {e}")
         # 弹窗提示错误
-        QMessageBox.critical(None， "错误", f"程序崩溃: {e}")
+        QMessageBox.critical(None, "错误", f"程序崩溃: {e}")    
