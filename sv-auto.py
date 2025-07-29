@@ -15,7 +15,7 @@ from ctypes import windll
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QTextEdit, QFrame, QGridLayout, QComboBox, QMessageBox, QSizePolicy
+    QLineEdit, QPushButton, QTextEdit, QFrame, QGridLayout, QGroupBox, QComboBox, QMessageBox, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QPalette, QColor, QPixmap, QBrush, QDoubleValidator
@@ -1513,24 +1513,24 @@ class ScriptThread(QThread):
                                     base_colors.append((color1, color2))
                                 self.log_signal.emit("第1回合，记录基准背景色完成")
 
-                            # self_shield_targets = scan_self_shield_targets()
-                            # if self_shield_targets:
-                            #     # 暂停脚本并通知用户
-                            #     self.paused = True
-                            #     self.log_signal.emit(f"检测到己方护盾目标！脚本已暂停")
+                            self_shield_targets = scan_self_shield_targets()
+                            if self_shield_targets:
+                                # 暂停脚本并通知用户
+                                self.paused = True
+                                self.log_signal.emit(f"检测到己方护盾目标！脚本已暂停")
 
-                            #     # 获取最高置信度的目标
-                            #     best_target = self_shield_targets[0]
-                            #     self.log_signal.emit(
-                            #         f"检测到己方护盾随从！位置: ({best_target['x']}, {best_target['y']}), "
-                            #         f"置信度: {best_target['confidence']:.2f}\n"
-                            #         "脚本已暂停，请手动处理。"
-                            #     )
+                                # 获取最高置信度的目标
+                                best_target = self_shield_targets[0]
+                                self.log_signal.emit(
+                                    f"检测到己方护盾随从！位置: ({best_target['x']}, {best_target['y']}), "
+                                    f"置信度: {best_target['confidence']:.2f}\n"
+                                    "脚本已暂停，请手动处理。"
+                                )
 
-                            #     # 跳过后续操作
-                            #     last_detected_button = key
-                            #     button_detected = True
-                            #     break
+                                # 跳过后续操作
+                                last_detected_button = key
+                                button_detected = True
+                                break
 
                             if current_round_count in (4, 5, 6, 7, 8):  # 第4 ，5，6 ,7,8回合
                                 self.log_signal.emit(f"第{current_round_count}回合，执行进化/超进化")
@@ -1805,11 +1805,28 @@ class ShadowverseAutomationUI(QMainWindow):
                 padding: 5px;
                 min-width: 100px;
             }
+            QGroupBox {
+                background-color: rgba(40, 40, 60, 180);
+                border: 1px solid #555588;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding: 15px;
+            }
+            QGroupBox::title {
+                color: #88AAFF;
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 5px;
+                font-weight: bold;
+            }
         """)
         
-        main_layout = QVBoxLayout(central_widget)
+        # 创建主网格布局
+        main_layout = QGridLayout(central_widget)
         main_layout.setSpacing(15)
         main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setColumnStretch(0, 1)
+        main_layout.setColumnStretch(1, 1)
         
         # 顶部栏布局
         top_bar_layout = QHBoxLayout()
@@ -1842,8 +1859,18 @@ class ShadowverseAutomationUI(QMainWindow):
         top_bar_layout.addWidget(self.maximize_btn)
         top_bar_layout.addWidget(self.close_btn)
 
-        main_layout.addLayout(top_bar_layout)
-        
+        # 顶部栏跨两列
+        main_layout.addLayout(top_bar_layout, 0, 0, 1, 2)
+
+        # === 左侧布局容器 ===
+        left_container = QWidget()
+        left_layout = QVBoxLayout(left_container)
+        left_layout.setSpacing(15)
+
+        # === 设备连接组 ===
+        connect_group = QGroupBox("设备连接")
+        connect_layout = QVBoxLayout()
+
         # ADB 连接部分
         adb_layout = QHBoxLayout()
         
@@ -1873,10 +1900,15 @@ class ShadowverseAutomationUI(QMainWindow):
         adb_layout.addWidget(status_label)
         adb_layout.addWidget(self.status_label)
         
-        main_layout.addLayout(adb_layout)
+        connect_layout.addLayout(adb_layout)
+        connect_group.setLayout(connect_layout)
+        left_layout.addWidget(connect_group)
 
-        # 新增：换牌策略配置部分（移除开关，默认启用）
-        strategy_layout = QHBoxLayout()
+        # === 策略配置组 ===
+        strategy_group = QGroupBox("策略配置")
+        strategy_layout = QVBoxLayout()
+
+        # 换牌策略配置
 
         # 策略选择
         strategy_label = QLabel("换牌策略:")
@@ -1897,8 +1929,93 @@ class ShadowverseAutomationUI(QMainWindow):
         # 添加弹性空间
         strategy_layout.addStretch()
 
-        main_layout.addLayout(strategy_layout)
+        # 延迟设置
+        delay_layout = QHBoxLayout()
         
+        attack_delay_label = QLabel("攻击延迟:")
+        self.delay_input = QLineEdit()
+        self.delay_input.setFixedWidth(60)
+        self.delay_input.setValidator(QDoubleValidator(0.1, 2.0, 2, self))
+        attack_delay_tip = QLabel("推荐: 0.6~0.9秒")
+        attack_delay_tip.setStyleSheet("color: #AAAAAA; font-size: 12px;")
+        
+        delay_layout.addWidget(attack_delay_label)
+        delay_layout.addWidget(self.delay_input)
+        delay_layout.addWidget(attack_delay_tip)
+        delay_layout.addSpacing(20)
+        
+        drag_delay_label = QLabel("拖拽延迟:")
+        self.drag_delay_input = QLineEdit()
+        self.drag_delay_input.setFixedWidth(60)
+        self.drag_delay_input.setValidator(QDoubleValidator(0.01, 0.5, 3, self))
+        drag_delay_tip = QLabel("推荐: 0.05~0.1秒")
+        drag_delay_tip.setStyleSheet("color: #AAAAAA; font-size: 12px;")
+        
+        delay_layout.addWidget(drag_delay_label)
+        delay_layout.addWidget(self.drag_delay_input)
+        delay_layout.addWidget(drag_delay_tip)
+        delay_layout.addStretch()
+        
+        strategy_layout.addLayout(delay_layout)
+
+        # 挂机时长设置
+        close_layout = QHBoxLayout()
+        close_label = QLabel("自动关闭:")
+        
+        self.close_hours_input = QLineEdit()
+        self.close_minutes_input = QLineEdit()
+        self.close_seconds_input = QLineEdit()
+        
+        total_timeout = self.config.get("inactivity_timeout", 300)
+        hours = total_timeout // 3600
+        minutes = (total_timeout % 3600) // 60
+        seconds = total_timeout % 60
+        
+        self.close_hours_input.setText(str(hours))
+        self.close_hours_input.setFixedWidth(40)
+        self.close_hours_input.setValidator(QIntValidator(0, 23, self))
+        hours_label = QLabel("时")
+        
+        self.close_minutes_input.setText(str(minutes))
+        self.close_minutes_input.setFixedWidth(40)
+        self.close_minutes_input.setValidator(QIntValidator(0, 59, self))
+        minutes_label = QLabel("分")
+        
+        self.close_seconds_input.setText(str(seconds))
+        self.close_seconds_input.setFixedWidth(40)
+        self.close_seconds_input.setValidator(QIntValidator(0, 59, self))
+        seconds_label = QLabel("秒")
+        
+        self.save_close_btn = QPushButton("设置")
+        self.save_close_btn.setFixedWidth(60)
+        self.save_close_btn.clicked.connect(self.save_close_settings)
+        
+        close_layout.addWidget(close_label)
+        close_layout.addWidget(self.close_hours_input)
+        close_layout.addWidget(hours_label)
+        close_layout.addWidget(self.close_minutes_input)
+        close_layout.addWidget(minutes_label)
+        close_layout.addWidget(self.close_seconds_input)
+        close_layout.addWidget(seconds_label)
+        close_layout.addWidget(self.save_close_btn)
+        close_layout.addStretch()
+        
+        strategy_layout.addLayout(close_layout)
+        strategy_group.setLayout(strategy_layout)
+        left_layout.addWidget(strategy_group)
+
+        # 添加左侧容器到网格布局
+        main_layout.addWidget(left_container, 1, 0)
+
+        # === 右侧布局容器 ===
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setSpacing(15)
+
+        # === 控制与统计组 ===
+        control_stats_group = QGroupBox("控制与统计")
+        control_stats_layout = QVBoxLayout()
+
         # 控制按钮
         btn_layout = QHBoxLayout()
         self.resume_btn = QPushButton("恢复")
@@ -1916,8 +2033,7 @@ class ShadowverseAutomationUI(QMainWindow):
         btn_layout.addWidget(self.stats_btn)
         btn_layout.addWidget(self.stop_btn)
         btn_layout.addStretch()
-        
-        main_layout.addLayout(btn_layout)
+        control_stats_layout.addLayout(btn_layout)
         
         # 攻击延迟设置
         delay_layout = QHBoxLayout()
@@ -1933,11 +2049,9 @@ class ShadowverseAutomationUI(QMainWindow):
         delay_layout.addWidget(self.delay_input)
         delay_layout.addWidget(delay_tip)
         delay_layout.addStretch()
-
-        # 添加到主布局
-        main_layout.addLayout(delay_layout)
+        control_stats_layout.addLayout(delay_layout)
         
-        # 拖拽延迟设置 - 新增
+        # 拖拽延迟设置
         drag_delay_layout = QHBoxLayout()
         drag_delay_label = QLabel("拖拽延迟:")
         self.drag_delay_input = QLineEdit()
@@ -1951,9 +2065,7 @@ class ShadowverseAutomationUI(QMainWindow):
         drag_delay_layout.addWidget(self.drag_delay_input)
         drag_delay_layout.addWidget(drag_delay_tip)
         drag_delay_layout.addStretch()
-
-        # 添加到主布局
-        main_layout.addLayout(drag_delay_layout)
+        control_stats_layout.addLayout(drag_delay_layout)
         
         # 统计信息面板
         stats_frame = QFrame()
@@ -1984,55 +2096,19 @@ class ShadowverseAutomationUI(QMainWindow):
         self.turn_count_label.setObjectName("StatValue")
         stats_layout.addWidget(self.turn_count_label, 1, 3)
         
-        main_layout.addWidget(stats_frame)
+        control_stats_layout.addWidget(stats_frame)
+        control_stats_group.setLayout(control_stats_layout)
+        right_layout.addWidget(control_stats_group)
+        right_layout.addStretch()
 
-        # === 新增：挂机时长设置 ===
-        close_layout = QHBoxLayout()
-        close_label = QLabel("自动关闭:")
-        
-        # 修复：创建输入框实例
-        self.close_hours_input = QLineEdit()
-        self.close_minutes_input = QLineEdit()
-        self.close_seconds_input = QLineEdit()
+        # 添加右侧容器到网格布局
+        main_layout.addWidget(right_container, 1, 1)
 
-        # 设置挂机时长输入框的初始值
-        total_timeout = self.config.get("inactivity_timeout", 300)
-        hours = total_timeout // 3600
-        minutes = (total_timeout % 3600) // 60
-        seconds = total_timeout % 60
 
-        self.close_hours_input.setText(str(hours))
-        self.close_hours_input.setFixedWidth(40)
-        self.close_hours_input.setValidator(QIntValidator(0, 23, self))
-        hours_label = QLabel("时")
-
-        self.close_minutes_input.setText(str(minutes))
-        self.close_minutes_input.setFixedWidth(40)
-        self.close_minutes_input.setValidator(QIntValidator(0, 59, self))
-        minutes_label = QLabel("分")
-
-        self.close_seconds_input.setText(str(seconds))
-        self.close_seconds_input.setFixedWidth(40)
-        self.close_seconds_input.setValidator(QIntValidator(0, 59, self))
-        seconds_label = QLabel("秒")
-
-        # 保存按钮
-        self.save_close_btn = QPushButton("设置")
-        self.save_close_btn.setFixedWidth(60)
-        self.save_close_btn.clicked.connect(self.save_close_settings)
-
-        close_layout.addWidget(close_label)
-        close_layout.addWidget(self.close_hours_input)
-        close_layout.addWidget(hours_label)
-        close_layout.addWidget(self.close_minutes_input)
-        close_layout.addWidget(minutes_label)
-        close_layout.addWidget(self.close_seconds_input)
-        close_layout.addWidget(seconds_label)
-        close_layout.addWidget(self.save_close_btn)
-        close_layout.addStretch()
 
         # 将这个布局移动到adb_layout之后
-        main_layout.insertLayout(2, close_layout)
+        # 将自动关闭布局添加到策略配置组
+        strategy_layout.addLayout(close_layout)
 
         # 运行日志标题
         log_title = QLabel("运行日志:")
@@ -2042,7 +2118,9 @@ class ShadowverseAutomationUI(QMainWindow):
         # 日志区域
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
-        main_layout.addWidget(self.log_output)
+        # 设置日志区域为可拉伸
+        main_layout.addWidget(self.log_output, 3, 0, 1, 2)
+        main_layout.setRowStretch(3, 1)
         
         self.setCentralWidget(central_widget)
         
@@ -2321,4 +2399,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"程序崩溃: {e}")
         # 弹窗提示错误
-        QMessageBox.critical(None, "错误", f"程序崩溃: {e}")    
+        QMessageBox.critical(None， "错误", f"程序崩溃: {e}")
