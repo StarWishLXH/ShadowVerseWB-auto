@@ -10,8 +10,10 @@ import datetime
 import random
 import io
 import ctypes
-from ctypes import wintypes
-from ctypes import windll
+import argparse
+import requests
+import re
+from ctypes import wintypes, windll
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -19,9 +21,9 @@ from PyQt5.QtWidgets import (
     QComboBox, QMessageBox, QSizePolicy, QStackedWidget, QDialog, QFormLayout
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt5.QtGui import QPalette, QColor, QPixmap, QBrush, QDoubleValidator
-from PyQt5.QtWidgets import QMessageBox
-from PyQt5.QtGui import QIntValidator  
+from PyQt5.QtGui import QPalette, QColor, QPixmap, QBrush, QDoubleValidator, QIntValidator
+
+
 
 # 当前版本号
 CURRENT_VERSION = "1.2.0"
@@ -56,6 +58,7 @@ DEFAULT_CONFIG = {
     "inactivity_timeout_hours": 0, # 新增：挂机时长小时数
     "inactivity_timeout_minutes": 5, # 新增：挂机时长分钟数
     "inactivity_timeout_seconds": 0, # 新增：挂机时长秒数
+    "qmsg_key": "",  # 新增：Qmsg推送密钥
 }
 
 def load_config():
@@ -99,9 +102,11 @@ console_handler = logging.StreamHandler(sys.stdout)
 console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 console_handler.setFormatter(console_formatter)
 
-# 添加处理器
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
+# 添加处理器（确保只添加一次）
+if not any(isinstance(handler, logging.FileHandler) for handler in logger.handlers):
+    logger.addHandler(file_handler)
+if not any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers):
+    logger.addHandler(console_handler)
 
 # 回合统计相关变量
 current_round_count = 1  # 当前对战的回合数
@@ -135,8 +140,7 @@ base_colors = None
 # 是否在对战中
 in_match = False
 
-# UI日志信号
-ui_log_signal = pyqtSignal(str)
+
 
 # ================== 核心功能函数 ==================
 def take_screenshot():
@@ -1081,8 +1085,14 @@ class UILogHandler(logging.Handler):
         self.log_signal = log_signal
 
     def emit(self, record):
-        log_entry = self.format(record)
-        self.log_signal.emit(log_entry)
+        try:
+            log_entry = self.format(record)
+            if hasattr(self.log_signal, 'emit'):
+                self.log_signal.emit(log_entry)
+        except Exception as e:
+            # 如果信号发射失败，使用print作为备选
+            print(f"日志信号发射失败: {e}")
+            print(f"日志内容: {self.format(record)}")
 
 class ScriptThread(QThread):
     log_signal = pyqtSignal(str)
@@ -1103,7 +1113,9 @@ class ScriptThread(QThread):
         self.adb_port = config["emulator_port"]
         self.scan_interval = config["scan_interval"]
         self.server = config["server"]  # 当前选择的服务器
-# 从配置中获取换牌策略
+        self.qmsg_key = config.get("qmsg_key", "")  # Qmsg推送密钥
+        self.qmsg_sent = False  # 标记是否已发送过Qmsg通知
+        # 从配置中获取换牌策略
         self.card_replacement_strategy = config.get("card_replacement", {}).get("strategy", "3费档次")        
         # 初始化设备对象
         self.u2_device = None
@@ -1112,11 +1124,56 @@ class ScriptThread(QThread):
         # 模板字典
         self.templates = {}
 
-        # 设置日志处理器
+        # 设置日志处理器（确保只添加一次）
         ui_handler = UILogHandler(self.log_signal)
         ui_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        
+        # 移除现有的UI处理器（如果存在）
+        for handler in logger.handlers[:]:
+            if isinstance(handler, UILogHandler):
+                logger.removeHandler(handler)
+        
         logger.removeHandler(console_handler)
         logger.addHandler(ui_handler)
+
+    def send_qmsg(self, message: str) -> bool:
+        """发送Qmsg通知
+
+        Args:
+            message: 要发送的通知内容
+
+        Returns:
+            是否发送成功
+        """
+        if not self.qmsg_key:
+            logger.info("未配置Qmsg密钥，跳过通知发送")
+            return False
+        if self.qmsg_sent:
+            logger.info("Qmsg通知已发送，跳过")
+            return False
+
+        # 过滤 URL
+        message = re.sub(r'https?://\S+', '[URL已过滤]', message)
+        # 过滤 IPv4 地址
+        message = re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', '[IP已过滤]', message)
+        # 过滤连续5位以上的数字串
+        message = re.sub(r'\d{6,}', '[数字串已过滤]', message)
+        # 过滤类似 (android.app,android.app) 的模式
+        message = re.sub(r'\([^,]+\.[^,]+,[^,]+\.[^)]+\)', '[包名已过滤]', message)
+
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        qmsg_url = f"https://qmsg.zendee.cn/jsend/{self.qmsg_key}"
+        payload = {"msg": message}
+
+        try:
+            response = requests.post(qmsg_url, json=payload, headers=headers)
+            response.raise_for_status()
+            logger.info(f"Qmsg通知发送成功，状态码: {response.status_code}")
+            self.qmsg_sent = True
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.error(f"发送Qmsg通知失败: {str(e)}")
+            return False
 
     def run(self):
         try:
@@ -1126,7 +1183,7 @@ class ScriptThread(QThread):
 
             self.start_time = time.time()
             self.status_signal.emit("运行中")
-            self.log_signal.emit("===== 脚本开始运行 =====")
+            logger.info("===== 脚本开始运行 =====")
 
             # 加载配置
             EMULATOR_PORT = self.config["emulator_port"]
@@ -1156,7 +1213,7 @@ class ScriptThread(QThread):
             load_round_statistics()
 
             # 1. 加载所有模板
-            self.log_signal.emit("正在加载模板...")
+            logger.info("正在加载模板...")
             
             # 根据服务器选择模板目录
             templates_dir = TEMPLATES_DIR if self.server == "国服" else TEMPLATES_DIR_INTERNATIONAL
@@ -1175,7 +1232,7 @@ class ScriptThread(QThread):
                 'war': create_template_info(load_template(templates_dir, 'war.png'), "决斗"),
                 'mainPage': create_template_info(load_template(templates_dir, 'mainPage.png'), "游戏主页面"),
                 'MuMuPage': create_template_info(load_template(templates_dir, 'MuMuPage.png'), "MuMu主页面"),
-                'LoginPage': create_template_info(load_template(templates_dir, 'LoginPage.png'), "排队主界面", threshold=0.35),
+                'LoginPage': create_template_info(load_template(templates_dir, 'LoginPage.png'), "排队主界面"),
                 'enterGame': create_template_info(load_template(templates_dir, 'enterGame.png'), "排队进入"),
                 'yes': create_template_info(load_template(templates_dir, 'Yes.png'), "继续中断的对战"),
                 'close1': create_template_info(load_template(templates_dir, 'close1.png'), "关闭卡组预览/编辑"),
@@ -1196,7 +1253,7 @@ class ScriptThread(QThread):
 
             extra_dir = self.config.get("extra_templates_dir", "")
             if extra_dir and os.path.isdir(extra_dir):
-                self.log_signal.emit(f"开始加载额外模板目录: {extra_dir}")
+                logger.info(f"开始加载额外模板目录: {extra_dir}")
 
                 # 支持的图片扩展名
                 valid_extensions = ['.png', '.jpg', '.jpeg', '.bmp']
@@ -1211,7 +1268,7 @@ class ScriptThread(QThread):
                         # 加载模板
                         template_img = load_template(extra_dir, filename)
                         if template_img is None:
-                            self.log_signal.emit(f"无法加载额外模板: {filename}")
+                            logger.error(f"无法加载额外模板: {filename}")
                             continue
 
                         # 创建模板信息（使用全局阈值）
@@ -1224,12 +1281,12 @@ class ScriptThread(QThread):
                         # 添加到模板字典（如果已存在则跳过）
                         if template_name not in self.templates:
                             self.templates[template_name] = template_info
-                            self.log_signal.emit(f"已添加额外模板: {template_name} (来自: {filename})")
+                            logger.info(f"已添加额外模板: {template_name} (来自: {filename})")
 
-            self.log_signal.emit("模板加载完成")
+            logger.info("模板加载完成")
 
             # 2. 连接设备
-            self.log_signal.emit("正在连接设备...")
+            logger.info("正在连接设备...")
             try:
                 import adbutils
                 from adbutils import adb, AdbClient
@@ -1246,18 +1303,18 @@ class ScriptThread(QThread):
                 emulator_connected = any(d.serial == target_serial for d in devices_list)
 
                 if not emulator_connected:
-                    self.log_signal.emit(f"尝试自动连接模拟器({target_serial})...")
+                    logger.info(f"尝试自动连接模拟器({target_serial})...")
                     try:
                         adb.connect(target_serial)
                         time.sleep(2)  # 等待连接稳定
                         devices_list = client.device_list()
                         emulator_connected = any(d.serial == target_serial for d in devices_list)
                         if emulator_connected:
-                            self.log_signal.emit(f"模拟器连接成功: {target_serial}")
+                            logger.info(f"模拟器连接成功: {target_serial}")
                         else:
-                            self.log_signal.emit(f"连接模拟器失败: 未出现在 device_list 中")
+                            logger.error(f"连接模拟器失败: 未出现在 device_list 中")
                     except Exception as conn_err:
-                        self.log_signal.emit(f"adbutils 连接失败: {conn_err}")
+                        logger.error(f"adbutils 连接失败: {conn_err}")
 
                 # 获取设备列表（再次获取以确保最新）
                 devices_list = client.device_list()
@@ -1273,20 +1330,22 @@ class ScriptThread(QThread):
 
                 if not target_device:
                     target_device = devices_list[0]
-                    self.log_signal.emit(f"未找到配置的模拟器({target_serial})，使用第一个设备: {target_device.serial}")
+                    logger.info(f"未找到配置的模拟器({target_serial})，使用第一个设备: {target_device.serial}")
 
                 # 获取 adbutils 设备对象
                 device = adb.device(serial=target_device.serial)
-                self.log_signal.emit(f"已连接设备: {target_device.serial}")
+                logger.info(f"已连接设备: {target_device.serial}")
 
                 # 获取 uiautomator2 设备对象
                 u2_device = u2.connect(target_device.serial)
                 self.u2_device = u2_device
                 self.adb_device = device
-                self.log_signal.emit("设备连接成功")
+                logger.info("设备连接成功")
             except Exception as e:
-                self.log_signal.emit(f"设备连接失败: {str(e)}")
+                error_msg = f"设备连接失败: {str(e)}"
+                logger.error(error_msg)
                 self.status_signal.emit("连接失败")
+                self.error_signal.emit(error_msg)
                 return
 
             def restart_app():
@@ -1303,7 +1362,10 @@ class ScriptThread(QThread):
                         target_package = self.config.get("app_package", "jp.co.cygames.ShadowverseWorldsBeyond")
                         server_name = "国际服"
                     
-                    self.log_signal.emit(f"检测到5分钟无活动，正在重启{server_name}应用...")
+                    logger.warning(f"检测到5分钟无活动，正在重启{server_name}应用...")
+                    
+                    # 发送Qmsg通知
+                    self.send_qmsg(f"sv-auto [端口:{self.adb_port}] 检测到5分钟无活动，正在重启{server_name}应用")
                     
                     # 强制停止目标应用
                     self.adb_device.shell(f"am force-stop {target_package}")
@@ -1313,13 +1375,13 @@ class ScriptThread(QThread):
                     self.adb_device.shell(f"monkey -p {target_package} -c android.intent.category.LAUNCHER 1")
                     time.sleep(5)  # 等待应用启动
 
-                    self.log_signal.emit(f"{server_name}应用重启完成")
+                    logger.info(f"{server_name}应用重启完成")
                     return True
                 except Exception as e:
                     # 在异常处理中使用配置值作为后备
                     current_server = self.config.get("server", "国际服")
                     server_name = "国服" if current_server == "国服" else "国际服"
-                    self.log_signal.emit(f"重启{server_name}应用失败: {str(e)}")
+                    logger.error(f"重启{server_name}应用失败: {str(e)}")
                     return False
 
             # 新增：重置活动计时器的函数
@@ -1339,7 +1401,7 @@ class ScriptThread(QThread):
                 return False
 
             # 3. 检测脚本启动时是否已经在对战中
-            self.log_signal.emit("检测当前游戏状态...")
+            logger.info("检测当前游戏状态...")
             init_screenshot = take_screenshot()
             if init_screenshot is not None:
                 # 转换为OpenCV格式
@@ -1359,7 +1421,7 @@ class ScriptThread(QThread):
                         in_match = True
                         match_start_time = time.time()
                         current_round_count = 1
-                        self.log_signal.emit("脚本启动时检测到已处于换牌阶段，自动设置回合数为1")    
+                        logger.info("脚本启动时检测到已处于换牌阶段，自动设置回合数为1")    
 
                 # 检测我方回合
                 if end_round_info:
@@ -1368,7 +1430,7 @@ class ScriptThread(QThread):
                         in_match = True
                         match_start_time = time.time()
                         current_round_count = 2
-                        self.log_signal.emit("脚本启动时检测到已处于我方回合，自动设置回合数为2")
+                        logger.info("脚本启动时检测到已处于我方回合，自动设置回合数为2")
 
                 # 检测敌方回合
                 if enemy_round_info:
@@ -1377,17 +1439,17 @@ class ScriptThread(QThread):
                         in_match = True
                         match_start_time = time.time()
                         current_round_count = 2
-                        self.log_signal.emit("脚本启动时检测到已处于敌方回合，自动设置回合数为2")
+                        logger.info("脚本启动时检测到已处于敌方回合，自动设置回合数为2")
 
             else:
-                self.log_signal.emit("无法获取初始截图，跳过状态检测")
+                logger.warning("无法获取初始截图，跳过状态检测")
 
             last_detected_button = None
             base_colors = None
 
             # 5. 主循环
-            self.log_signal.emit("脚本初始化完成，开始运行...")
-            self.log_signal.emit("模拟器请调成1280x720分辨率")
+            logger.info("脚本初始化完成，开始运行...")
+            logger.info("模拟器请调成1280x720分辨率")
 
             # 防倒卖声明
             red_start = "<font color='red'>"
@@ -1400,7 +1462,7 @@ class ScriptThread(QThread):
 警惕倒卖行为！
 {red_end}
 """
-            self.log_signal.emit(message.strip())
+            logger.info(message.strip())
 
             needLogPause = True
             needAddRoundCount = True
@@ -1412,7 +1474,7 @@ class ScriptThread(QThread):
                 if self.paused:
                     if needLogPause:
                         # 记录暂停信息
-                        self.log_signal.emit("脚本暂停中...")
+                        logger.info("脚本暂停中...")
                         needLogPause = False
                     # 在暂停状态下每1秒检查一次，并重置活动计时器
                     reset_activity_timer()
@@ -1460,16 +1522,16 @@ class ScriptThread(QThread):
                         if key != last_detected_button:
                             reset_activity_timer()  # 重置活动计时器
                             if key == 'end_round' and in_match:
-                                self.log_signal.emit(f"已发现'结束回合'按钮 (当前回合: {current_round_count})")
+                                logger.info(f"已发现'结束回合'按钮 (当前回合: {current_round_count})")
 
                         if key == 'decision':
-                            self.log_signal.emit("检测到换牌界面，开始执行换牌逻辑")
+                            logger.info("检测到换牌界面，开始执行换牌逻辑")
                             # 执行换牌操作
                             perform_card_replacement(self.card_replacement_strategy, self.u2_device, self.templates_cost) # 换牌完成后点击决定按钮
                             center_x = max_loc[0] + template_info['w'] // 2
                             center_y = max_loc[1] + template_info['h'] // 2
                             self.u2_device.click(center_x + random.randint(-2, 2), center_y + random.randint(-2, 2))
-                            self.log_signal.emit("换牌完成，点击决定按钮")
+                            logger.info("换牌完成，点击决定按钮")
                             last_detected_button = key
                             button_detected = True
                             time.sleep(1)
@@ -1478,7 +1540,7 @@ class ScriptThread(QThread):
                         # 处理每日卡包
                         if key == 'dailyCard':
                             #点击固定位置跳过
-                            self.log_signal.emit("检测到每日卡包，尝试跳过")
+                            logger.info("检测到每日卡包，尝试跳过")
                             self.u2_device.click(717, 80)
 
                         # 处理对战开始/结束逻辑
@@ -1487,17 +1549,17 @@ class ScriptThread(QThread):
                             if in_match:
                                 # 如果已经在战斗中，先结束当前对战
                                 self.end_current_match()
-                                self.log_signal.emit("检测到新对战开始，结束上一场对战")
+                                logger.info("检测到新对战开始，结束上一场对战")
                             # 开始新的对战                 
                             base_colors = None  # 重置开局基准背景色
                             self.start_new_match()
                             in_match = True
-                            self.log_signal.emit("检测到新对战开始")
+                            logger.info("检测到新对战开始")
 
                         if key == 'enemy_round':
                             if key != last_detected_button:
                                 # 敌方回合开始时重置needAddRoundCount
-                                self.log_signal.emit("检测到敌方回合")
+                                logger.info("检测到敌方回合")
                                 needAddRoundCount = True
                                 last_detected_button = key
                             time.sleep(1)
@@ -1514,17 +1576,18 @@ class ScriptThread(QThread):
                                     # 记录Y轴向下20个像素点的色彩
                                     color2 = screenshot.getpixel((x, y + 20))
                                     base_colors.append((color1, color2))
-                                self.log_signal.emit("第1回合，记录基准背景色完成")
+                                logger.info("第1回合，记录基准背景色完成")
 
+                            """                             
                             self_shield_targets = scan_self_shield_targets()
                             if self_shield_targets:
                                 # 暂停脚本并通知用户
                                 self.paused = True
-                                self.log_signal.emit(f"检测到己方护盾目标！脚本已暂停")
+                                logger.warning(f"检测到己方护盾目标！脚本已暂停")
 
                                 # 获取最高置信度的目标
                                 best_target = self_shield_targets[0]
-                                self.log_signal.emit(
+                                logger.warning(
                                     f"检测到己方护盾随从！位置: ({best_target['x']}, {best_target['y']}), "
                                     f"置信度: {best_target['confidence']:.2f}\n"
                                     "脚本已暂停，请手动处理。"
@@ -1533,13 +1596,14 @@ class ScriptThread(QThread):
                                 # 跳过后续操作
                                 last_detected_button = key
                                 button_detected = True
-                                break
+                                break 
+                            """
 
                             if current_round_count in (4, 5, 6, 7, 8):  # 第4 ，5，6 ,7,8回合
-                                self.log_signal.emit(f"第{current_round_count}回合，执行进化/超进化")
+                                logger.info(f"第{current_round_count}回合，执行进化/超进化")
                                 perform_fullPlus_actions(self.u2_device, current_round_count, base_colors, self.config)
                             elif current_round_count > 30:   #30回合以上弃权防止烧绳
-                                self.log_signal.emit(f"30回合以上，直接弃权")
+                                logger.warning(f"30回合以上，直接弃权")
                                 time.sleep(0.5)
                                 self.u2_device.click(57, 63)
                                 time.sleep(0.5)
@@ -1548,7 +1612,7 @@ class ScriptThread(QThread):
                                 self.u2_device.click(773, 560)
                                 time.sleep(1)
                             else:
-                                self.log_signal.emit(f"第{current_round_count}回合，执行正常操作")
+                                logger.info(f"第{current_round_count}回合，执行正常操作")
                                 perform_full_actions(self.u2_device, current_round_count, base_colors, self.config)
 
                             if needAddRoundCount:
@@ -1558,11 +1622,16 @@ class ScriptThread(QThread):
                         # 计算中心点并点击
                         center_x = max_loc[0] + template_info['w'] // 2
                         center_y = max_loc[1] + template_info['h'] // 2
+                        # 登陆界面偏移
+                        """                         
+                        if key == 'LoginPage':
+                            center_x += 400 
+                        """
                         self.u2_device.click(center_x + random.randint(-2, 2), center_y + random.randint(-2, 2))
                         button_detected = True
 
                         if key != last_detected_button:
-                            self.log_signal.emit(f"检测到按钮并点击: {template_info['name']} ")
+                            logger.info(f"检测到按钮并点击: {template_info['name']} ")
                         # 更新状态跟踪
                         last_detected_button = key
                         time.sleep(0.5)
@@ -1600,17 +1669,19 @@ class ScriptThread(QThread):
             hours, remainder = divmod(run_duration.total_seconds(), 3600)
             minutes, seconds = divmod(remainder, 60)
 
-            self.log_signal.emit("\n===== 本次运行总结 =====")
-            self.log_signal.emit(f"脚本启动时间: {current_run_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            self.log_signal.emit(f"运行时长: {int(hours)}小时{int(minutes)}分钟{int(seconds)}秒")
-            self.log_signal.emit(f"完成对战次数: {current_run_matches}")
-            self.log_signal.emit("===== 脚本结束运行 =====")
+            logger.info("\n===== 本次运行总结 =====")
+            logger.info(f"脚本启动时间: {current_run_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"运行时长: {int(hours)}小时{int(minutes)}分钟{int(seconds)}秒")
+            logger.info(f"完成对战次数: {current_run_matches}")
+            logger.info("===== 脚本结束运行 =====")
             self.status_signal.emit("已停止")
         except Exception as e:
             error_msg = f"脚本运行出错: {str(e)}"
             logger.error(error_msg)
             self.status_signal.emit("已停止")
             self.error_signal.emit(f"{str(e)}")
+            # 发送Qmsg通知
+            self.send_qmsg(f"sv-auto [端口:{self.adb_port}] 脚本运行出错: {str(e)}")
             return
 
     def start_new_match(self):
@@ -1621,8 +1692,8 @@ class ScriptThread(QThread):
         current_round_count = 1
         match_start_time = time.time()
         current_run_matches += 1
-        self.log_signal.emit(f"===== 开始新的对战 =====")
-        self.log_signal.emit(f"本次运行对战次数: {current_run_matches}")
+        logger.info(f"===== 开始新的对战 =====")
+        logger.info(f"本次运行对战次数: {current_run_matches}")
 
     def end_current_match(self):
         """结束当前对战并记录统计数据"""
@@ -1646,8 +1717,8 @@ class ScriptThread(QThread):
         # 保存统计数据到文件
         save_round_statistics()
 
-        self.log_signal.emit(f"===== 对战结束 =====")
-        self.log_signal.emit(f"回合数: {current_round_count}, 持续时间: {int(minutes)}分{int(seconds)}秒")
+        logger.info(f"===== 对战结束 =====")
+        logger.info(f"回合数: {current_round_count}, 持续时间: {int(minutes)}分{int(seconds)}秒")
 
         # 重置对战状态
         match_start_time = None
@@ -1655,6 +1726,10 @@ class ScriptThread(QThread):
 
     def stop(self):
         self.running = False
+        # 清理日志处理器
+        for handler in logger.handlers[:]:
+            if isinstance(handler, UILogHandler):
+                logger.removeHandler(handler)
 
     def pause(self):
         self.paused = True
@@ -1872,7 +1947,7 @@ class SettingsPage(QWidget):
         self.parent.stacked_widget.setCurrentIndex(0)
 
 class ShadowverseAutomationUI(QMainWindow):
-    def __init__(self):
+    def __init__(self, port=None, qmsg_key=None):
         super().__init__()
         # 移除窗口边框和标题栏
         self.setWindowFlags(Qt.WindowMinimizeButtonHint | Qt.FramelessWindowHint)
@@ -1881,6 +1956,19 @@ class ShadowverseAutomationUI(QMainWindow):
         
         # 加载配置
         self.config = load_config()
+        
+        # 记录是否通过命令行传入了端口
+        self.auto_start = port is not None
+        # 自动启动执行标志，确保只执行一次
+        self.auto_start_executed = False
+        
+        # 如果提供了端口参数，覆盖配置文件中的端口
+        if port is not None:
+            self.config["emulator_port"] = port
+        
+        # 如果提供了qmsg_key参数，覆盖配置文件中的qmsg_key
+        if qmsg_key is not None:
+            self.config["qmsg_key"] = qmsg_key
         
         # 设置窗口背景
         self.set_background()
@@ -2476,6 +2564,13 @@ class ShadowverseAutomationUI(QMainWindow):
         self.log_output.append("正在连接设备...")
         self.start_btn.setEnabled(False)
 
+        # 检查是否已有线程在运行，如果有则先停止
+        if hasattr(self, 'script_thread') and self.script_thread and self.script_thread.isRunning():
+            self.log_output.append("检测到已有线程在运行，正在停止旧线程...")
+            self.script_thread.stop()
+            self.script_thread.wait()
+            self.log_output.append("旧线程已停止")
+
         # 加载配置
         config = self.config
         try:
@@ -2502,16 +2597,21 @@ class ShadowverseAutomationUI(QMainWindow):
             self.script_thread.resume()
             self.resume_btn.setEnabled(False)
 
+    def reset_button_states(self):
+        """重置所有按钮状态为初始状态"""
+        self.start_btn.setEnabled(True)
+        self.resume_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
+        self.pause_btn.setEnabled(False)
+        self.timer.stop()  # 停止运行时间计时器
+
     def handle_script_error(self, error_msg):
         self.log_output.append(f"脚本线程错误，请关闭并重启脚本后尝试，错误信息:\n {error_msg}")
         if self.script_thread:
             self.script_thread.stop()
             self.script_thread.wait()
         # 重置按钮状态
-        self.start_btn.setEnabled(True)
-        self.resume_btn.setEnabled(False)
-        self.stop_btn.setEnabled(False)
-        self.pause_btn.setEnabled(False)
+        self.reset_button_states()
         self.update_status("已停止")
 
     def stop_script(self):
@@ -2519,11 +2619,7 @@ class ShadowverseAutomationUI(QMainWindow):
             self.log_output.append(f"脚本已停止")
             self.script_thread.stop()
             self.script_thread.wait()
-            self.start_btn.setEnabled(True)
-            self.resume_btn.setEnabled(False)
-            self.stop_btn.setEnabled(False)
-            self.pause_btn.setEnabled(False)
-            self.timer.stop()
+            self.reset_button_states()
             self.update_status("已停止")
 
     def pause_script(self):
@@ -2594,6 +2690,14 @@ class ShadowverseAutomationUI(QMainWindow):
             self.move(event.globalPos() - self.drag_position)
             event.accept()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # 如果通过命令行传入了端口，自动点击开始运行按钮（只执行一次）
+        if self.auto_start and not self.auto_start_executed:
+            # 延迟一下，确保UI完全初始化
+            QTimer.singleShot(1000, self.start_script)
+            self.auto_start_executed = True
+
     def closeEvent(self, event):
         if self.script_thread:
             self.script_thread.stop()
@@ -2601,11 +2705,17 @@ class ShadowverseAutomationUI(QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='Shadowverse 自动化脚本')
+    parser.add_argument('--port', type=int, help='模拟器端口号')
+    parser.add_argument('--qmsg-key', type=str, help='Qmsg推送密钥')
+    args = parser.parse_args()
+    
     try:
         app = QApplication(sys.argv)
-        window = ShadowverseAutomationUI()
+        window = ShadowverseAutomationUI(port=args.port, qmsg_key=args.qmsg_key)
         window.show()
         sys.exit(app.exec_())
     except Exception as e:
         # 弹窗提示错误
-        QMessageBox.critical(None， "错误", f"程序崩溃: {e}")
+        QMessageBox.critical(None, "错误", f"程序崩溃: {e}")

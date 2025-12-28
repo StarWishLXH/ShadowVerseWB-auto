@@ -2,7 +2,7 @@
 :: 设置命令行编码为 UTF-8，避免出现乱码
 chcp 65001
 
-SET VENV_DIR=venv
+SET VENV_DIR=.venv
 SET REQUIREMENTS_FILE=requirements.txt
 
 :: Step 1: 检查虚拟环境是否存在
@@ -61,3 +61,4 @@ IF NOT EXIST "extra_templates" (
 )
 
 echo 初始化检查完成！
+pause

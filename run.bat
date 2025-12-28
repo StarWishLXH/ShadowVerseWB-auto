@@ -2,7 +2,7 @@
 :: 设置命令行编码为 UTF-8，避免出现乱码
 chcp 65001
 
-SET VENV_DIR=venv
+SET VENV_DIR=.venv
 
 :: Step 2: 激活虚拟环境
 echo 激活虚拟环境...
